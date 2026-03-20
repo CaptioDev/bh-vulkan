@@ -2,13 +2,14 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <vector>
 
-const int WIDTH = 1200;
-const int HEIGHT = 1200;
+const int WIDTH = 4800;
+const int HEIGHT = 4800;
 
 const double rs = 1.0;
-const double stepSize = 5;
-const int maxSteps = 500;
+const double stepSize = 0.02;
+const int maxSteps = 1000;
 
 struct Vec3 {
     double x, y, z;
@@ -50,77 +51,61 @@ int main() {
     std::ofstream out("blackhole.ppm");
     out << "P3\n" << WIDTH << " " << HEIGHT << "\n255\n";
 
+    // Store the image in memory first, because multiple threads cannot write to the same file simultaneously
+    std::vector<Vec3> image(WIDTH * HEIGHT);
+
+    #pragma omp parallel for schedule(dynamic)
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
-
-            // Screen space
+            // Calculate the pixel color just like before
+            // Example:
             double u_screen = (double)x / WIDTH * 2.0 - 1.0;
             double v_screen = 1.0 - (double)y / HEIGHT * 2.0;
 
             Vec3 rayDir = normalize({u_screen * 1.2, v_screen * 1.2, -1.0});
-            Vec3 pos = {0, 2, 10}; // elevated camera
+            Vec3 pos = {0, 2, 10};
 
             Vec3 color = {0,0,0};
 
+            // ray marching loop
             for (int i = 0; i < maxSteps; i++) {
-
-                // Move ray forward
                 pos.x += rayDir.x * stepSize;
                 pos.y += rayDir.y * stepSize;
                 pos.z += rayDir.z * stepSize;
 
                 double r = sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
 
-                // Absorbed by black hole
-                if (r < rs) {
-                    color = {0,0,0};
-                    break;
-                }
+                if (r < rs) { color = {0,0,0}; break; }
 
-                Vec3 toCenter = {-pos.x, -pos.y, -pos.z};
-                toCenter = normalize(toCenter);
+                Vec3 toCenter = normalize({-pos.x, -pos.y, -pos.z});
+                double bend = rs / (r*r);
 
-                double bend = rs / (r * r);
-
-                // bend toward black hole center
-                rayDir.x += toCenter.x * bend * stepSize * 5.0;
-                rayDir.y += toCenter.y * bend * stepSize * 5.0;
-                rayDir.z += toCenter.z * bend * stepSize * 5.0;
-
+                rayDir.x += toCenter.x * bend * stepSize;
+                rayDir.y += toCenter.y * bend * stepSize;
+                rayDir.z += toCenter.z * bend * stepSize;
                 rayDir = normalize(rayDir);
 
-                // Accretion disk
                 if (inDisk(r, pos)) {
                     color = diskColor(r);
-
-                    // Doppler brightness
                     double doppler = 0.5 + 0.5 * rayDir.x;
-                    color = {
-                        color.x * doppler,
-                        color.y * doppler,
-                        color.z * doppler
-                    };
+                    color = { color.x*doppler, color.y*doppler, color.z*doppler };
                     break;
                 }
 
-                // Escaped to space
-                if (r > 50.0) {
-                    color = starfield(rayDir);
-                    break;
-                }
+                if (r > 50.0) { color = starfield(rayDir); break; }
             }
 
-            // Gamma correction
-            auto gamma = [](double x) {
-                return pow(x, 0.6);
-            };
-
-            int R = std::min(255, (int)(gamma(color.x) * 255));
-            int G = std::min(255, (int)(gamma(color.y) * 255));
-            int B = std::min(255, (int)(gamma(color.z) * 255));
-
-            out << R << " " << G << " " << B << "\n";
+            image[y * WIDTH + x] = color;
         }
+    }
+
+    // Write the image sequentially
+    for (int i = 0; i < WIDTH*HEIGHT; i++) {
+        auto gamma = [](double x) { return pow(x, 0.6); };
+        int R = std::min(255, (int)(gamma(image[i].x) * 255));
+        int G = std::min(255, (int)(gamma(image[i].y) * 255));
+        int B = std::min(255, (int)(gamma(image[i].z) * 255));
+        out << R << " " << G << " " << B << "\n";
     }
 
     out.close();

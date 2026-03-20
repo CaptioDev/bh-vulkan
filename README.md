@@ -15,7 +15,7 @@ A simple CPU-based black hole simulation that ray-traces photon paths and output
 ### 1. Compile
 
 ```bash
-g++ -O3 main.cpp -o bh
+g++ -O3 -fopenmp main.cpp -o bh
 ```
 
 ### 2. Run
@@ -39,7 +39,7 @@ xdg-open blackhole.ppm
 #### 1. Compile
 
 ```bash
-g++ -O3 main.cpp -o bh.exe
+g++ -O3 -fopenmp main.cpp -o bh
 ```
 
 #### 2. Run
