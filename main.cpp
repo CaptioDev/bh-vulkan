@@ -7,7 +7,7 @@ const int WIDTH = 1200;
 const int HEIGHT = 1200;
 
 const double rs = 1.0;
-const double stepSize = 0.06;
+const double stepSize = 5;
 const int maxSteps = 500;
 
 struct Vec3 {
