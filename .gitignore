@@ -5,7 +5,6 @@ bh_vulkan
 
 # compiled shaders
 *.spv
-shader.comp
 
 # generated files
 *.ppm

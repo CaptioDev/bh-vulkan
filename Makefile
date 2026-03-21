@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -pthread -Wall -I. $(shell pkg-config --cflags glfw3 2>/dev/null || echo "-I/usr/include")
+CXXFLAGS = -std=c++20 -O3 -pthread -Wall -I. $(shell pkg-config --cflags glfw3 2>/dev/null || echo "-I/usr/include")
 LDFLAGS = -lvulkan -lpthread $(shell pkg-config --libs glfw3 2>/dev/null || echo "-lglfw")
 
 SRC = main.cpp
