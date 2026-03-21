@@ -8,6 +8,7 @@ bh_vulkan
 
 # generated files
 *.ppm
+*.csv
 
 # OS specific
 .DS_Store

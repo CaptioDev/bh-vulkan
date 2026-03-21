@@ -145,10 +145,15 @@ private:
 
   void onKey(int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-      if (key == GLFW_KEY_RIGHT) spin_a += 0.05f;
-      if (key == GLFW_KEY_LEFT) spin_a -= 0.05f;
-      if (spin_a > 0.999f) spin_a = 0.999f;
-      if (spin_a < -0.999f) spin_a = -0.999f;
+      if (key == GLFW_KEY_RIGHT) spin_a += 0.01f;
+      if (key == GLFW_KEY_LEFT) spin_a -= 0.01f;
+      if (spin_a > 0.9999f) spin_a = 0.9999f;
+      if (spin_a < -0.9999f) spin_a = -0.9999f;
+      
+      if (key == GLFW_KEY_UP) cameraPitch += 0.05f;
+      if (key == GLFW_KEY_DOWN) cameraPitch -= 0.05f;
+      if (cameraPitch > 1.5f) cameraPitch = 1.5f;
+      if (cameraPitch < -1.5f) cameraPitch = -1.5f;
     }
   }
 
