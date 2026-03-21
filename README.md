@@ -15,13 +15,28 @@ The renderer uses a custom fragment shader (`shader.frag`) to perform per-pixel 
 For every step along the ray's path, the shader calculates the gravitational acceleration using an approximation derived from the geodesic equation for a photon in a Schwarzschild metric:
 
 1. **Specific Angular Momentum ($\vec{h}$):** Calculated as the cross product of the current position ($\vec{r}$) and photon velocity/direction ($\vec{v}$):
-   $$ \vec{h} = \vec{r} \times \vec{v} $$
+
+   $$
+   \vec{h} = \vec{r} \times \vec{v}
+   $$
+
 2. **Acceleration ($\vec{a}$):** The bending of the light ray towards the black hole is computed as:
-   $$ \vec{a} = -1.5 R_s \frac{|\vec{h}|^2}{r^5} \vec{r} $$
+
+   $$
+   \vec{a} = -1.5 R_s \frac{|\vec{h}|^2}{r^5} \vec{r}
+   $$
+
    *(where $R_s$ is the Schwarzschild radius and $r = |\vec{r}|$ is the distance to the singularity)*
+
 3. **Integration:** The velocity and position of the photon are updated at each step using numerical integration:
-   $$ \vec{v}_{new} = \text{normalize}(\vec{v}_{old} + \vec{a} \cdot dt) $$
-   $$ \vec{r}_{new} = \vec{r}_{old} + \vec{v}_{new} \cdot dt $$
+
+   $$
+   \vec{v}_{new} = \text{normalize}(\vec{v}_{old} + \vec{a} \cdot dt)
+   $$
+
+   $$
+   \vec{r}_{new} = \vec{r}_{old} + \vec{v}_{new} \cdot dt
+   $$
 
 The ray continues until it either crosses the event horizon ($r < R_s$), escapes into the background, or intersects the glowing accretion disk.
 
