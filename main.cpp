@@ -116,7 +116,7 @@ private:
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     window =
-        glfwCreateWindow(WIDTH, HEIGHT, "Black Hole Vulkan", nullptr, nullptr);
+        glfwCreateWindow(WIDTH, HEIGHT, "OpenKerr", nullptr, nullptr);
 
     glfwSetWindowUserPointer(window, this);
     glfwSetCursorPosCallback(window, [](GLFWwindow *w, double x, double y) {
@@ -136,7 +136,8 @@ private:
           reinterpret_cast<BlackHoleRenderer *>(glfwGetWindowUserPointer(w));
       app->onScroll(xoffset, yoffset);
     });
-    glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int scancode, int action, int mods) {
+    glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int scancode,
+                                  int action, int mods) {
       auto app =
           reinterpret_cast<BlackHoleRenderer *>(glfwGetWindowUserPointer(w));
       app->onKey(key, scancode, action, mods);
@@ -145,15 +146,23 @@ private:
 
   void onKey(int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-      if (key == GLFW_KEY_RIGHT) spin_a += 0.01f;
-      if (key == GLFW_KEY_LEFT) spin_a -= 0.01f;
-      if (spin_a > 0.9999f) spin_a = 0.9999f;
-      if (spin_a < -0.9999f) spin_a = -0.9999f;
-      
-      if (key == GLFW_KEY_UP) cameraPitch += 0.05f;
-      if (key == GLFW_KEY_DOWN) cameraPitch -= 0.05f;
-      if (cameraPitch > 1.5f) cameraPitch = 1.5f;
-      if (cameraPitch < -1.5f) cameraPitch = -1.5f;
+      if (key == GLFW_KEY_RIGHT)
+        spin_a += 0.01f;
+      if (key == GLFW_KEY_LEFT)
+        spin_a -= 0.01f;
+      if (spin_a > 0.9999f)
+        spin_a = 0.9999f;
+      if (spin_a < -0.9999f)
+        spin_a = -0.9999f;
+
+      if (key == GLFW_KEY_UP)
+        cameraPitch += 0.05f;
+      if (key == GLFW_KEY_DOWN)
+        cameraPitch -= 0.05f;
+      if (cameraPitch > 1.5f)
+        cameraPitch = 1.5f;
+      if (cameraPitch < -1.5f)
+        cameraPitch = -1.5f;
     }
   }
 
@@ -243,7 +252,7 @@ private:
       throw std::runtime_error("failed to find GPUs with Vulkan support!");
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-    physicalDevice = devices[0]; // Just pick the first one for simplicity
+    physicalDevice = devices[0]; // Just pick the first one...
   }
 
   void createLogicalDevice() {
@@ -679,8 +688,7 @@ private:
       recorded = true;
     });
 
-    // wait for tasks (in a real scenario we wouldn't block, we'd record
-    // parallel chunks)
+    // wait for tasks (record parallel chunks in the future)
     while (!recorded) {
       std::this_thread::yield();
     }
