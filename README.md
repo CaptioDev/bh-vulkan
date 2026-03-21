@@ -1,112 +1,46 @@
-# Black Hole CPU Renderer
+# Black Hole Vulkan Renderer
 
-A simple CPU-based black hole simulation that ray-traces photon paths and outputs a `.ppm` image.
+A real-time black hole simulation that ray-traces photon paths directly to the screen using Vulkan and GLFW.
 
 ---
 
 ## Requirements
 
-* C++ compiler (GCC, Clang, or MSVC)
+* C++17 compiler (GCC, Clang, or MSVC)
+* [Vulkan SDK](https://vulkan.lunarg.com/) (provides Vulkan headers and `glslangValidator` for shader compilation)
+* [GLFW 3](https://www.glfw.org/)
+* `pkg-config` (for resolving dependencies on Linux)
 
 ---
 
-## Linux
+## Linux Build and Run
 
-### 1. Compile
+### 1. Build Compilation
 
 ```bash
-g++ -O3 -fopenmp -lncurses main.cpp -o bh
+make
 ```
 
-### 2. Run
+This will automatically compile the shaders (`shader.vert` and `shader.frag` to `.spv` format) and build the `bh_vulkan` executable using `g++`.
+
+### 2. Execution
 
 ```bash
-./bh
-```
-
-### 3. View Output
-
-```bash
-xdg-open blackhole.ppm
+./bh_vulkan
 ```
 
 ---
 
-## Windows
+## Controls
 
-### Option A: MinGW / MSYS2
-
-#### 1. Compile
-
-```bash
-g++ -O3 -fopenmp -lncurses main.cpp -o bh
-```
-
-#### 2. Run
-
-```bash
-bh.exe
-```
+* **Left Click + Drag**: Rotate camera around the black hole (adjust yaw and pitch)
+* **Scroll Wheel**: Zoom in and out (adjust camera radius)
 
 ---
 
-### Option B: Visual Studio (Developer Command Prompt)
+## Notes & Performance Tuning
 
-#### 1. Compile
-
-```bat
-cl /O2 main.cpp
-```
-
-#### 2. Run
-
-```bat
-main.exe
-```
-
----
-
-## Output
-
-The program generates:
-
-```
-blackhole.ppm
-```
-
-This is a plain-text image format.
-
----
-
-## Viewing the Image
-
-### Linux
-
-* `xdg-open blackhole.ppm`
-* or open with any image viewer
-
-### Windows
-
-* Open with:
-
-  * IrfanView
-  * GIMP
-  * Paint.NET
-
----
-
-## Notes
-
-* Increase resolution by editing `WIDTH` and `HEIGHT` in `main.cpp`
-* Higher resolution will increase render time
-* This version is CPU-only (no GPU acceleration)
-
----
-
-## Next Steps
-
-* Improve accuracy (RK4 integration)
-* Add textures or starfields
-* Port to GPU (Vulkan compute)
-
----
+* The application implements a multi-threaded thread pool design for distributing command buffer recording across CPU cores.
+* You can adjust the starting `WIDTH` and `HEIGHT` constants in `main.cpp` to change the rendering resolution.
+* This project has been upgraded from an initial CPU-only offline renderer (which generated `.ppm` files) to a real-time hardware-accelerated Vulkan renderer. The gravity lensing and physics have been ported and optimized as a per-pixel raymarching process within the fragment shader (`shader.frag`).
+* The window title will dynamically update and display the current Frames Per Second (FPS).

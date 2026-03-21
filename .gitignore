@@ -1,3 +1,14 @@
-blackhole.ppm
+# build artifacts
 bh
+bh_vulkan
+*.o
+
+# compiled shaders
+*.spv
 shader.comp
+
+# generated files
+*.ppm
+
+# OS specific
+.DS_Store

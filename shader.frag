@@ -73,34 +73,40 @@ vec4 diskColor(vec3 pos, vec3 vel) {
 
     float verticalDensity = exp(-pow(distToPlane / thickness, 2.0));
     
-    // Keplerian Differential Rotation: inner rings spin faster
-    float omega = 15.0 / pow(r, 1.5);
-    float angle = atan(pos.z, pos.x) - omega * pc.time_res.x * 0.15;
+    // Keplerian Differential Rotation
+    float omega = 12.0 / pow(r, 1.5);
+    float angle = atan(pos.z, pos.x) - omega * pc.time_res.x * 0.1;
     vec2 rotated_pos = vec2(r * cos(angle), r * sin(angle));
     
-    // Realistic turbulent gas streaks using FBM and warped rings
-    float noiseVal = fbm(rotated_pos * 1.5 + pc.time_res.x * 0.02);
-    float rings = sin(r * 8.0 + noiseVal * 6.0);
-    // Sharpen rings into striations
-    float striations = smoothstep(-0.5, 0.8, rings) * (0.3 + 0.7 * noiseVal);
+    // Chaotic plasma structure (No repetitive sine waves)
+    // 1. Low frequency turbulent clouds
+    float clouds = fbm(rotated_pos * 1.2);
+    // 2. High frequency fine details (streaks)
+    float streaks = fbm(rotated_pos * 3.5 + pc.time_res.x * 0.05);
+    // 3. Radial bands (purely distance based pseudo-randomness)
+    float bands = fbm(vec2(r * 2.0, 0.0));
     
-    float radialDensity = exp(-pow((r - 5.0)/2.5, 2.0));
-    radialDensity *= (0.4 + 1.6 * striations); 
+    // Combine for organic plasma
+    float structure = 0.2 + 0.4 * clouds + 0.3 * bands + 0.1 * streaks;
+    
+    // Envelope limiting the disk extent
+    float radialDensity = exp(-pow((r - 5.5) / 3.0, 2.0));
+    radialDensity *= (structure * 2.0); 
     
     // Doppler beaming (blueshift approaching, redshift receding)
     vec3 diskVel = normalize(vec3(-pos.z, 0.0, pos.x)); 
-    float doppler = 1.0 + dot(normalize(vel), diskVel) * 0.65;
+    float doppler = 1.0 + dot(normalize(vel), diskVel) * 0.7;
     
-    float intensity = verticalDensity * radialDensity * pow(doppler, 4.0) * 2.0;
+    float intensity = verticalDensity * radialDensity * pow(doppler, 4.0) * 2.5;
     
-    // Thermal spectrum (from extremely hot white/blue interior to dull orange/red edge)
-    vec3 hot = vec3(1.0, 0.9, 0.7);
-    vec3 mid = vec3(1.0, 0.4, 0.05);
-    vec3 cold = vec3(0.5, 0.1, 0.0);
+    // Interstellar 'Gargantua' cinematic color palette
+    vec3 hot = vec3(1.0, 0.95, 0.8);
+    vec3 mid = vec3(1.0, 0.5, 0.05);
+    vec3 cold = vec3(0.3, 0.05, 0.0);
     
-    float tempProgress = clamp((10.0 - r) / 6.0, 0.0, 1.0);
+    float tempProgress = clamp((12.0 - r) / 8.0, 0.0, 1.0);
     vec3 baseColor = mix(cold, mid, tempProgress);
-    baseColor = mix(baseColor, hot, clamp((4.0 - r)/1.5, 0.0, 1.0));
+    baseColor = mix(baseColor, hot, clamp((4.5 - r)/1.5, 0.0, 1.0));
     
     vec3 col = baseColor * intensity;
     float alpha = clamp(intensity * 0.5, 0.0, 1.0);
