@@ -2,6 +2,23 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
+// SPH Particle data structure (must match CPU)
+struct Particle {
+    vec3 position;
+    vec3 velocity;
+    float density;
+    float pressure;
+    float temperature;
+    float mass;
+};
+
+// Particle buffer from compute shader
+layout(binding = 0, std430) buffer ParticleBuffer {
+    Particle particles[];
+};
+
+const int PARTICLE_COUNT = 65536;
+
 layout(push_constant) uniform PushConstants {
     vec4 params;    // x: time, y: width, z: height, w: mass
     vec4 cameraPos; // xyz: pos, w: spin_a
@@ -100,6 +117,26 @@ float get_disk_height(float r, float phi) {
     return r * tan(tilt) * sin(phi - twist);
 }
 
+// Compute particle density at a point using SPH kernel
+float compute_particle_density(vec3 pos) {
+    float h = 0.5; // Smoothing length
+    float density = 0.0;
+    
+    // Sample a subset of particles for performance
+    int step = max(1, PARTICLE_COUNT / 1024);
+    
+    for (int i = 0; i < PARTICLE_COUNT; i += step) {
+        vec3 diff = pos - particles[i].position;
+        float r = length(diff);
+        if (r < h) {
+            float x = h * h - r * r;
+            density += particles[i].mass * 315.0 / (64.0 * 3.14159 * pow(h, 9.0)) * x * x * x;
+        }
+    }
+    
+    return density * float(step);
+}
+
 vec3 evaluate_disk(vec3 pos, vec3 p, uint winding_number) {
     float a = pc.cameraPos.w;
     float r_isco = compute_isco();
@@ -119,10 +156,9 @@ vec3 evaluate_disk(vec3 pos, vec3 p, uint winding_number) {
     // Novikov-Thorne strict smooth envelope
     float T_base = pow(max(0.0, 1.0 - sqrt(r_isco / r)) / (r * r * r), 0.25);
     
-    // Lin-Shu analytical spiral density map (m=2 two arms mapping logical cluster turbulence)
-    float phi = atan(pos.z, pos.x);
-    float spiral = 1.0 + 0.85 * cos(2.0 * phi - 4.0 * log(r) - pc.params.x * 2.0);
-    float T = T_base * max(0.05, spiral);
+    // Use SPH particle density instead of analytical spiral
+    float particleDensity = compute_particle_density(pos);
+    float T = T_base * max(0.05, particleDensity * 10.0);
     
     float effective_T = T * g_factor;
     float intensity = pow(g_factor, 4.0) * T * 1200.0;

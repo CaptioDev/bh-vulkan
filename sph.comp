@@ -1,0 +1,267 @@
+#version 450
+// SPH (Smoothed Particle Hydrodynamics) Compute Shader for Black Hole Accretion Disk
+// Simulates fluid dynamics of the accretion disk like Interstellar's Gargantua
+
+layout(local_size_x = 256) in;
+
+// Particle data structure
+struct Particle {
+    vec3 position;    // Position in spacetime
+    vec3 velocity;    // 4-velocity components
+    float density;    // Rest mass density
+    float pressure;   // Pressure from EOS
+    float temperature; // Temperature (affects emission)
+    float mass;       // Particle mass
+};
+
+// Storage buffers for particle simulation
+layout(binding = 0, std430) buffer ParticleBuffer {
+    Particle particles[];
+};
+
+// Push constants for simulation parameters
+layout(push_constant) uniform SimParams {
+    float dt;           // Time step
+    float time;         // Current simulation time
+    float spin_a;       // Black hole spin parameter
+    float mass;         // Black hole mass
+    float viscosity;   // Kinematic viscosity
+    float alpha;        // Alpha viscosity parameter
+    float beta;         // Beta viscosity parameter
+    uint particleCount; // Number of particles
+    float innerRadius;  // Disk inner edge
+    float outerRadius;  // Disk outer edge
+} params;
+
+// Constants
+const float M = 1.0;           // Normalized black hole mass
+const float c = 1.0;           // Speed of light (normalized)
+const float G = 1.0;           // Gravitational constant (normalized)
+const float PI = 3.14159265359;
+
+// SPH Smoothing kernel (Poly6)
+float poly6_kernel(float r, float h) {
+    if (r >= h) return 0.0;
+    float x = h * h - r * r;
+    return 315.0 / (64.0 * PI * pow(h, 9.0)) * x * x * x;
+}
+
+// SPH Spiky kernel gradient for pressure forces
+vec3 spiky_gradient(vec3 r, float r_len, float h) {
+    if (r_len >= h || r_len < 1e-6) return vec3(0.0);
+    float x = h - r_len;
+    return -45.0 / (PI * pow(h, 6.0)) * x * x * normalize(r);
+}
+
+// SPH Viscosity kernel laplacian
+float viscosity_laplacian(float r, float h) {
+    if (r >= h) return 0.0;
+    return 45.0 / (PI * pow(h, 6.0)) * (h - r);
+}
+
+// Compute Kerr metric radial coordinate
+float compute_kerr_r(vec3 pos) {
+    float R2 = dot(pos, pos);
+    float a = params.spin_a;
+    float a2 = a * a;
+    float y2 = pos.y * pos.y;
+    return sqrt(0.5 * (R2 - a2 + sqrt((R2 - a2) * (R2 - a2) + 4.0 * a2 * y2)));
+}
+
+// Compute ISCO (Innermost Stable Circular Orbit)
+float compute_isco() {
+    float a = params.spin_a;
+    float Z1 = 1.0 + pow(1.0 - a * a, 1.0 / 3.0) * 
+               (pow(1.0 + a, 1.0 / 3.0) + pow(1.0 - a, 1.0 / 3.0));
+    float Z2 = sqrt(3.0 * a * a + Z1 * Z1);
+    return 3.0 + Z2 - sqrt(max(0.0, (3.0 - Z1) * (3.0 + Z1 + 2.0 * Z2)));
+}
+
+// Gravitational acceleration from black hole
+vec3 compute_gravity(vec3 pos) {
+    float r = compute_kerr_r(pos);
+    if (r < 1e-3) return vec3(0.0);
+    
+    float a = params.spin_a;
+    float rs = 2.0 * M; // Schwarzschild radius
+    
+    // Newtonian approximation with relativistic correction
+    vec3 r_vec = pos;
+    float R = length(r_vec);
+    if (R < 1e-3) return vec3(0.0);
+    
+    // Force = -GM/r^2 with relativistic corrections
+    float force_mag = -M * params.mass / (R * R);
+    
+    // Frame dragging effect (Lense-Thirring precession)
+    vec3 frame_drag = vec3(0.0);
+    if (a != 0.0) {
+        vec3 angular_momentum = vec3(0.0, a, 0.0);
+        frame_drag = 2.0 * a * cross(angular_momentum, r_vec) / (R * R * R);
+    }
+    
+    return force_mag * normalize(r_vec) + frame_drag;
+}
+
+// Compute orbital velocity for stable disk
+vec3 compute_orbital_velocity(vec3 pos) {
+    float r = compute_kerr_r(pos);
+    float a = params.spin_a;
+    
+    // Keplerian orbital velocity
+    float omega = sqrt(M / (r * r * r));
+    
+    // Relativistic correction for inner disk
+    float isco = compute_isco();
+    if (r < isco * 1.5) {
+        // At ISCO, particles must co-rotate with black hole
+        omega = 1.0 / (pow(isco, 1.5) + a);
+    }
+    
+    // Tangent direction (counter-clockwise when viewed from above)
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 tangent = normalize(cross(up, pos));
+    
+    return tangent * omega * r;
+}
+
+// Compute disk height (Bardeen-Petterson effect)
+float compute_disk_height(float r, float phi) {
+    float r_isco = compute_isco();
+    
+    // Tilt angle increases with radius due to Bardeen-Petterson effect
+    float tilt = 0.5 * smoothstep(r_isco + 0.5, r_isco + 12.0, r);
+    
+    // Inner disk aligned with black hole equator
+    // Outer disk twisted by frame dragging
+    float twist = 15.0 / (r + 1e-4);
+    
+    return r * tan(tilt) * sin(phi - twist);
+}
+
+// Initialize particles in disk configuration
+void initialize_particles() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= params.particleCount) return;
+    
+    // Initialize particle in disk
+    float r = mix(params.innerRadius, params.outerRadius, 
+                  float(gid) / float(params.particleCount));
+    
+    // Random angular distribution
+    float phi = 2.0 * PI * float(gid) * 0.618033988749895; // Golden ratio for distribution
+    
+    // Disk height with Bardeen-Petterson warping
+    float height = compute_disk_height(r, phi);
+    height += (fract(sin(float(gid) * 43758.5453) * 43758.5453) - 0.5) * 0.1;
+    
+    vec3 pos = vec3(r * cos(phi), height, r * sin(phi));
+    
+    // Set initial orbital velocity
+    vec3 vel = compute_orbital_velocity(pos);
+    
+    particles[gid].position = pos;
+    particles[gid].velocity = vel;
+    particles[gid].density = 1.0;
+    particles[gid].pressure = 0.0;
+    particles[gid].temperature = 1.0;
+    particles[gid].mass = 0.001; // Small mass for each particle
+}
+
+// Main SPH simulation step
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= params.particleCount) return;
+    
+    Particle p = particles[gid];
+    
+    // SPH smoothing length
+    float h = 0.5; // Smoothing length
+    
+    // Step 1: Compute density using SPH
+    float density = 0.0;
+    for (uint j = 0; j < params.particleCount; j++) {
+        if (j == gid) continue;
+        vec3 diff = p.position - particles[j].position;
+        float r = length(diff);
+        density += particles[j].mass * poly6_kernel(r, h);
+    }
+    p.density = max(density, 1e-6);
+    
+    // Step 2: Compute pressure (ideal gas EOS)
+    // P = k * rho^gamma (gamma = 5/3 for monatomic gas)
+    float gamma = 5.0 / 3.0;
+    p.pressure = 0.01 * pow(p.density, gamma);
+    
+    // Step 3: Compute forces
+    vec3 force = vec3(0.0);
+    
+    // Gravitational force from black hole
+    force += compute_gravity(p.position) * p.mass;
+    
+    // SPH pressure and viscosity forces
+    for (uint j = 0; j < params.particleCount; j++) {
+        if (j == gid) continue;
+        
+        vec3 diff = p.position - particles[j].position;
+        float r = length(diff);
+        
+        if (r < h && r > 1e-6) {
+            // Pressure force: -m * (P_i/rho_i^2 + P_j/rho_j^2) * gradient(W)
+            float pressure_term = (p.pressure / (p.density * p.density) + 
+                                   particles[j].pressure / (particles[j].density * particles[j].density));
+            force -= p.mass * pressure_term * spiky_gradient(diff, r, h);
+            
+            // Viscosity force: mu * m * (v_j - v_i) / rho * laplacian(W)
+            vec3 vel_diff = particles[j].velocity - p.velocity;
+            float visc = params.viscosity;
+            force += visc * p.mass * vel_diff / p.density * viscosity_laplacian(r, h);
+        }
+    }
+    
+    // Step 4: Update velocity (with alpha-beta viscosity)
+    float r = compute_kerr_r(p.position);
+    float isco = compute_isco();
+    
+    // Add alpha viscosity (shock viscosity)
+    if (r < isco * 2.0) {
+        // Stronger viscosity near ISCO (accretion)
+        float alpha_force = params.alpha * sqrt(p.pressure / p.density) * p.density;
+        force -= alpha_force * p.velocity;
+    }
+    
+    // Step 5: Integrate (Euler for now, could upgrade to RK4)
+    vec3 acceleration = force / p.density;
+    p.velocity += acceleration * params.dt;
+    
+    // Step 6: Compute temperature based on velocity and position
+    // Inner disk is hotter due to gravitational energy release
+    float temp = pow(isco / max(r, isco), 0.25);
+    p.temperature = temp;
+    
+    // Step 7: Update position
+    p.position += p.velocity * params.dt;
+    
+    // Step 8: Boundary conditions
+    // Keep particles in disk plane with some vertical spread
+    float disk_height = compute_disk_height(compute_kerr_r(p.position), atan(p.position.z, p.position.x));
+    p.position.y = mix(p.position.y, disk_height, 0.1);
+    
+    // Prevent particles from falling into event horizon
+    float r_curr = compute_kerr_r(p.position);
+    if (r_curr < isco * 1.01) {
+        // Respawn at outer edge
+        float new_r = params.outerRadius * (0.9 + 0.1 * fract(sin(params.time * 12.9898 + float(gid)) * 43758.5453));
+        float new_phi = 2.0 * PI * fract(sin(float(gid) * 78.233 + params.time) * 43758.5453);
+        p.position = vec3(new_r * cos(new_phi), 0.0, new_r * sin(new_phi));
+        p.velocity = compute_orbital_velocity(p.position);
+    }
+    
+    // Prevent escape to infinity
+    if (r_curr > params.outerRadius) {
+        p.velocity -= normalize(p.position) * dot(p.velocity, normalize(p.position));
+    }
+    
+    // Write back
+    particles[gid] = p;
+}

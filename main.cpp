@@ -107,6 +107,34 @@ private:
   float spin_a = 0.99f;
   bool mouseDragging = false;
 
+  // SPH Particle System
+  static const uint32_t PARTICLE_COUNT = 65536; // 64K particles
+  VkBuffer particleBuffer;
+  VkDeviceMemory particleBufferMemory;
+  VkShaderModule sphShaderModule;
+  VkPipeline sphComputePipeline;
+  VkPipelineLayout sphPipelineLayout;
+  VkCommandPool sphCommandPool;
+  VkCommandBuffer sphCommandBuffer;
+  VkDescriptorSet sphDescriptorSet;
+  VkDescriptorPool sphDescriptorPool;
+  VkDescriptorSet graphicsParticleDescriptorSet;
+  VkDescriptorPool graphicsParticleDescriptorPool;
+  float simTime = 0.0f;
+
+  struct SPHParams {
+    float dt;
+    float time;
+    float spin_a;
+    float mass;
+    float viscosity;
+    float alpha;
+    float beta;
+    uint32_t particleCount;
+    float innerRadius;
+    float outerRadius;
+  };
+
   struct PushConstants {
     float params[4];
     float cameraPos[4];
@@ -211,6 +239,250 @@ private:
     createCommandPool();
     createCommandBuffers();
     createSyncObjects();
+    createSPHSystem();
+    createGraphicsParticleDescriptorSet();
+  }
+
+  void createSPHSystem() {
+    // Create particle buffer with host-visible memory for initialization
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = PARTICLE_COUNT * sizeof(float) * 12; // vec3 pos + vec3 vel + 4 floats
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &particleBuffer) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create particle buffer!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, particleBuffer, &memRequirements);
+
+    // Use HOST_VISIBLE memory so we can initialize particles on CPU
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &particleBufferMemory) != VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate particle buffer memory!");
+    }
+
+    vkBindBufferMemory(device, particleBuffer, particleBufferMemory, 0);
+
+    // Initialize particles on CPU
+    initializeParticlesOnCPU();
+
+    // Create compute pipeline for SPH
+    auto sphShaderCode = readFile("sph.spv");
+    sphShaderModule = createShaderModule(sphShaderCode);
+
+    VkPipelineShaderStageCreateInfo sphShaderStageInfo{};
+    sphShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    sphShaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    sphShaderStageInfo.module = sphShaderModule;
+    sphShaderStageInfo.pName = "main";
+
+    // Descriptor set layout for particle buffer
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    binding.descriptorCount = 1;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create descriptor set layout!");
+    }
+
+    // Allocate descriptor set
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    VkDescriptorPool descriptorPool;
+    vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
+
+    VkDescriptorSetAllocateInfo allocDescInfo{};
+    allocDescInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocDescInfo.descriptorPool = descriptorPool;
+    allocDescInfo.descriptorSetCount = 1;
+    allocDescInfo.pSetLayouts = &descriptorSetLayout;
+
+    VkDescriptorSet descriptorSet;
+    vkAllocateDescriptorSets(device, &allocDescInfo, &descriptorSet);
+
+    // Update descriptor set with buffer
+    VkDescriptorBufferInfo bufferDescriptor{};
+    bufferDescriptor.buffer = particleBuffer;
+    bufferDescriptor.offset = 0;
+    bufferDescriptor.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet descriptorWrite{};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = descriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pBufferInfo = &bufferDescriptor;
+
+    vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+
+    // Push constants for SPH
+    VkPushConstantRange sphPushConstant{};
+    sphPushConstant.offset = 0;
+    sphPushConstant.size = sizeof(SPHParams);
+    sphPushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &sphPushConstant;
+
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &sphPipelineLayout) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create SPH pipeline layout!");
+    }
+
+    VkComputePipelineCreateInfo computePipelineInfo{};
+    computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    computePipelineInfo.stage = sphShaderStageInfo;
+    computePipelineInfo.layout = sphPipelineLayout;
+
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &sphComputePipeline) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create SPH compute pipeline!");
+    }
+
+    // Store descriptor set for later use
+    sphDescriptorSet = descriptorSet;
+
+    // Create command pool and buffer for compute
+    VkCommandPoolCreateInfo commandPoolInfo{};
+    commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    commandPoolInfo.queueFamilyIndex = 0;
+    commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    vkCreateCommandPool(device, &commandPoolInfo, nullptr, &sphCommandPool);
+
+    VkCommandBufferAllocateInfo commandBufferInfo{};
+    commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    commandBufferInfo.commandPool = sphCommandPool;
+    commandBufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandBufferInfo.commandBufferCount = 1;
+    vkAllocateCommandBuffers(device, &commandBufferInfo, &sphCommandBuffer);
+
+  }
+
+  uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+      if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+        return i;
+      }
+    }
+    throw std::runtime_error("failed to find suitable memory type!");
+  }
+
+  void initializeParticlesOnCPU() {
+    // Initialize particles in a disk configuration on CPU and upload to GPU
+    struct ParticleData {
+      float pos[3];
+      float vel[3];
+      float density;
+      float pressure;
+      float temperature;
+      float mass;
+    };
+
+    std::vector<ParticleData> particles(PARTICLE_COUNT);
+
+    float innerRadius = 3.0f;   // ISCO for a=0
+    float outerRadius = 20.0f;
+
+    for (uint32_t i = 0; i < PARTICLE_COUNT; i++) {
+      // Distribute particles in disk
+      float r = innerRadius + (outerRadius - innerRadius) * (float(i) / PARTICLE_COUNT);
+      float phi = 2.0f * 3.14159265f * i * 0.618033988749895f; // Golden ratio
+
+      // Disk height (thin disk)
+      float height = 0.1f * (float(rand()) / RAND_MAX - 0.5f);
+
+      particles[i].pos[0] = r * cos(phi);
+      particles[i].pos[1] = height;
+      particles[i].pos[2] = r * sin(phi);
+
+      // Keplerian orbital velocity
+      float omega = sqrt(1.0f / (r * r * r));
+      particles[i].vel[0] = -omega * r * sin(phi);
+      particles[i].vel[1] = 0.0f;
+      particles[i].vel[2] = omega * r * cos(phi);
+
+      particles[i].density = 1.0f;
+      particles[i].pressure = 0.01f;
+      particles[i].temperature = 1.0f;
+      particles[i].mass = 0.001f;
+    }
+
+    // Map memory and upload
+    void* data;
+    vkMapMemory(device, particleBufferMemory, 0, sizeof(ParticleData) * PARTICLE_COUNT, 0, &data);
+    memcpy(data, particles.data(), sizeof(ParticleData) * PARTICLE_COUNT);
+    vkUnmapMemory(device, particleBufferMemory);
+  }
+
+  void updateSPHSimulation(float dt) {
+    simTime += dt;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(sphCommandBuffer, &beginInfo);
+
+    // Bind compute pipeline
+    vkCmdBindPipeline(sphCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, sphComputePipeline);
+
+    // Bind descriptor set
+    vkCmdBindDescriptorSets(sphCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, sphPipelineLayout, 0, 1, &sphDescriptorSet, 0, nullptr);
+
+    // Update push constants
+    SPHParams params{};
+    params.dt = dt;
+    params.time = simTime;
+    params.spin_a = spin_a;
+    params.mass = 1.0f;
+    params.viscosity = 0.1f;
+    params.alpha = 0.1f;
+    params.beta = 0.0f;
+    params.particleCount = PARTICLE_COUNT;
+    params.innerRadius = 3.0f;  // ISCO for a=0 is ~3M
+    params.outerRadius = 20.0f;
+
+    vkCmdPushConstants(sphCommandBuffer, sphPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SPHParams), &params);
+
+    // Dispatch SPH compute shader
+    vkCmdDispatch(sphCommandBuffer, (PARTICLE_COUNT + 255) / 256, 1, 1);
+
+    vkEndCommandBuffer(sphCommandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &sphCommandBuffer;
+
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue);
   }
 
   void createInstance() {
@@ -507,10 +779,27 @@ private:
     pushConstant.size = sizeof(PushConstants);
     pushConstant.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    // Descriptor set layout for particle buffer in fragment shader
+    VkDescriptorSetLayoutBinding particleBinding{};
+    particleBinding.binding = 0;
+    particleBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    particleBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    particleBinding.descriptorCount = 1;
+
+    VkDescriptorSetLayoutCreateInfo descLayoutInfo{};
+    descLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descLayoutInfo.bindingCount = 1;
+    descLayoutInfo.pBindings = &particleBinding;
+
+    VkDescriptorSetLayout particleDescLayout;
+    vkCreateDescriptorSetLayout(device, &descLayoutInfo, nullptr, &particleDescLayout);
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &particleDescLayout;
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
                                &pipelineLayout) != VK_SUCCESS) {
@@ -536,8 +825,66 @@ private:
       throw std::runtime_error("failed to create graphics pipeline!");
     }
 
+    // Create descriptor pool and set for particle buffer in graphics pipeline
+    VkDescriptorPoolSize graphicsPoolSize{};
+    graphicsPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    graphicsPoolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo graphicsPoolInfo{};
+    graphicsPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    graphicsPoolInfo.poolSizeCount = 1;
+    graphicsPoolInfo.pPoolSizes = &graphicsPoolSize;
+    graphicsPoolInfo.maxSets = 1;
+
+    vkCreateDescriptorPool(device, &graphicsPoolInfo, nullptr, &graphicsParticleDescriptorPool);
+
+    // We need to create this after SPH system is initialized, so we'll do it in initVulkan after createSPHSystem
+
     vkDestroyShaderModule(device, fragShaderModule, nullptr);
     vkDestroyShaderModule(device, vertShaderModule, nullptr);
+  }
+
+  void createGraphicsParticleDescriptorSet() {
+    // Get the descriptor set layout from the pipeline
+    VkDescriptorSetLayoutBinding particleBinding{};
+    particleBinding.binding = 0;
+    particleBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    particleBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    particleBinding.descriptorCount = 1;
+
+    VkDescriptorSetLayoutCreateInfo descLayoutInfo{};
+    descLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descLayoutInfo.bindingCount = 1;
+    descLayoutInfo.pBindings = &particleBinding;
+
+    VkDescriptorSetLayout particleDescLayout;
+    vkCreateDescriptorSetLayout(device, &descLayoutInfo, nullptr, &particleDescLayout);
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = graphicsParticleDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &particleDescLayout;
+
+    vkAllocateDescriptorSets(device, &allocInfo, &graphicsParticleDescriptorSet);
+
+    // Update with particle buffer
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = particleBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet descWrite{};
+    descWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descWrite.dstSet = graphicsParticleDescriptorSet;
+    descWrite.dstBinding = 0;
+    descWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descWrite.descriptorCount = 1;
+    descWrite.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(device, 1, &descWrite, 0, nullptr);
+
+    vkDestroyDescriptorSetLayout(device, particleDescLayout, nullptr);
   }
 
   void createFramebuffers() {
@@ -636,6 +983,9 @@ private:
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       graphicsPipeline);
 
+    // Bind particle buffer descriptor set
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &graphicsParticleDescriptorSet, 0, nullptr);
+
     PushConstants constants{};
     constants.params[0] = glfwGetTime();
     constants.params[1] = WIDTH;
@@ -733,12 +1083,21 @@ private:
     const size_t numThreads = std::thread::hardware_concurrency();
     ThreadPool threadPool(numThreads > 0 ? numThreads : 4);
     std::cout << "Running with " << numThreads << " threads...\n";
+    std::cout << "SPH Particles: " << PARTICLE_COUNT << "\n";
 
     auto start = std::chrono::high_resolution_clock::now();
     int frames = 0;
+    auto lastTime = start;
 
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();
+
+      // Update SPH simulation
+      auto currentTime = std::chrono::high_resolution_clock::now();
+      float dt = std::chrono::duration<float>(currentTime - lastTime).count();
+      lastTime = currentTime;
+      updateSPHSimulation(dt);
+
       drawFrame(threadPool);
 
       frames++;
@@ -746,7 +1105,7 @@ private:
       std::chrono::duration<double> elapsed = now - start;
       if (elapsed.count() >= 1.0) {
         std::string title =
-            "Black Hole Vulkan - " + std::to_string(frames) + " FPS";
+            "OpenKerr - SPH Accretion Disk - " + std::to_string(frames) + " FPS";
         glfwSetWindowTitle(window, title.c_str());
         frames = 0;
         start = now;
@@ -756,7 +1115,25 @@ private:
   }
 
   void cleanup() {
-    // Simple cleanup
+    // SPH cleanup
+    if (device != VK_NULL_HANDLE) {
+      if (sphDescriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, sphDescriptorPool, nullptr);
+      if (sphCommandPool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(device, sphCommandPool, nullptr);
+      if (sphComputePipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, sphComputePipeline, nullptr);
+      if (sphPipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, sphPipelineLayout, nullptr);
+      if (sphShaderModule != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, sphShaderModule, nullptr);
+      if (particleBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device, particleBuffer, nullptr);
+      if (particleBufferMemory != VK_NULL_HANDLE)
+        vkFreeMemory(device, particleBufferMemory, nullptr);
+    }
+
+    // Graphics cleanup
     if (device != VK_NULL_HANDLE) {
       vkDestroyCommandPool(device, commandPool, nullptr);
       for (auto framebuffer : swapChainFramebuffers)

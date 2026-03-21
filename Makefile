@@ -21,8 +21,9 @@ shaders:
 	glslangValidator -V shader.vert -o vert.spv
 	glslangValidator -V shader.frag -o frag.spv
 	glslangValidator -V sweep.comp -o sweep.spv
+	glslangValidator -V sph.comp -o sph.spv
 
 clean:
-	rm -f $(OBJ) $(TARGET) sweep_bin vert.spv frag.spv sweep.spv
+	rm -f $(OBJ) $(TARGET) sweep_bin vert.spv frag.spv sweep.spv sph.spv *.ppm *.csv
 
 .PHONY: all shaders clean
