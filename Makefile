@@ -6,10 +6,13 @@ SRC = main.cpp
 OBJ = $(SRC:.cpp=.o)
 TARGET = bh_vulkan
 
-all: shaders $(TARGET)
+all: shaders $(TARGET) sweep_bin
 
 $(TARGET): $(OBJ)
 	$(CXX) -o $@ $^ $(LDFLAGS)
+
+sweep_bin: sweep.cpp sweep.spv
+	$(CXX) $(CXXFLAGS) -o $@ sweep.cpp $(LDFLAGS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -17,8 +20,9 @@ $(TARGET): $(OBJ)
 shaders:
 	glslangValidator -V shader.vert -o vert.spv
 	glslangValidator -V shader.frag -o frag.spv
+	glslangValidator -V sweep.comp -o sweep.spv
 
 clean:
-	rm -f $(OBJ) $(TARGET) vert.spv frag.spv
+	rm -f $(OBJ) $(TARGET) sweep_bin vert.spv frag.spv sweep.spv
 
 .PHONY: all shaders clean

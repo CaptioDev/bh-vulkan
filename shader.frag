@@ -221,8 +221,19 @@ vec3 render(vec2 uv) {
     // Time-delay surfaces & secondary celestial sources integration
     if (alpha > 0.005) {
         vec3 bg_dir = normalize(p); 
-        float star = smoothstep(0.999, 1.0, fract(sin(dot(bg_dir, vec3(12.9898, 78.233, 45.164))) * 43758.5453));
-        col += vec3(star) * alpha * 1.5;
+        
+        // Analytical smooth grid-based stars for anti-aliasing against severe distortion warpage
+        vec3 cell = floor(bg_dir * 200.0);
+        vec3 offset = bg_dir * 200.0 - cell;
+        
+        float n = fract(sin(dot(cell, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+        
+        if (n > 0.95) {
+            vec3 star_pos = vec3(fract(n * 134.5), fract(n * 253.2), fract(n * 312.1));
+            float dist = length(offset - star_pos);
+            float star_intensity = smoothstep(0.4, 0.0, dist) * (n - 0.95) * 50.0;
+            col += vec3(star_intensity) * alpha;
+        }
     }
     
     // Standard filmic ACES curve output mapping
