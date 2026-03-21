@@ -93,11 +93,24 @@ vec4 diskColor(vec3 pos, vec3 vel) {
     float radialDensity = exp(-pow((r - 5.5) / 3.0, 2.0));
     radialDensity *= (structure * 2.0); 
     
-    // Doppler beaming (blueshift approaching, redshift receding)
-    vec3 diskVel = normalize(vec3(-pos.z, 0.0, pos.x)); 
-    float doppler = 1.0 + dot(normalize(vel), diskVel) * 0.7;
+    // Relativistic Doppler and Gravitational Redshift (g-factor)
+    vec3 diskVel = normalize(vec3(-pos.z, 0.0, pos.x));
+    float v_fluid = sqrt(rs / (2.0 * r)); // Keplerian velocity
+    float gamma = 1.0 / sqrt(1.0 - v_fluid * v_fluid);
     
-    float intensity = verticalDensity * radialDensity * pow(doppler, 4.0) * 2.5;
+    // Photons travel radially AWAY from camera, into the disk.
+    // The relative emission angle cos_alpha compares photon approach vs fluid velocity
+    float cos_alpha = dot(-normalize(vel), diskVel);
+    float D = 1.0 / (gamma * (1.0 - v_fluid * cos_alpha));
+    
+    // Gravitational redshift
+    float r_cam = length(pc.cameraPos.xyz);
+    float Z_grav = sqrt(max(0.001, 1.0 - rs / r_cam)) / sqrt(max(0.001, 1.0 - rs / r));
+    
+    float g = D * Z_grav;
+    
+    // Invariant bolometric intensity demands I scales as g^4
+    float intensity = verticalDensity * radialDensity * pow(g, 4.0) * 2.5;
     
     // Interstellar 'Gargantua' cinematic color palette
     vec3 hot = vec3(1.0, 0.95, 0.8);
@@ -108,7 +121,13 @@ vec4 diskColor(vec3 pos, vec3 vel) {
     vec3 baseColor = mix(cold, mid, tempProgress);
     baseColor = mix(baseColor, hot, clamp((4.5 - r)/1.5, 0.0, 1.0));
     
-    vec3 col = baseColor * intensity;
+    // Apply spectral shift via g-factor
+    // Blueshifts (g > 1) push towards blue/white, redshifts (g < 1) push towards red/black
+    vec3 spectralShift = vec3(pow(g, -1.0), 1.0, pow(g, 1.0));
+    vec3 shiftedColor = baseColor * spectralShift;
+    shiftedColor = normalize(shiftedColor + 0.001) * length(baseColor);
+    
+    vec3 col = shiftedColor * intensity;
     float alpha = clamp(intensity * 0.5, 0.0, 1.0);
     return vec4(col, alpha);
 }
@@ -123,7 +142,12 @@ vec3 render(vec2 in_uv) {
     vec3 right = normalize(cross(forward, vec3(0,1.0,0)));
     vec3 up = cross(right, forward);
     
-    vec3 vel = normalize(forward + uv.x * right * 0.5 + uv.y * up * 0.5);
+    // Gravitational aberration (FOV distortion) based on camera depth in Schwarzschild metric
+    float r_cam = length(pos);
+    float lapse = sqrt(max(0.001, 1.0 - rs / r_cam));
+    
+    // The lapse function squishes the radial axis relative to angular axes
+    vec3 vel = normalize(forward * lapse + uv.x * right * 0.5 + uv.y * up * 0.5);
     vec3 col = vec3(0.0);
     float alpha = 1.0;
     float r = length(pos);
