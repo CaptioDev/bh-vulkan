@@ -104,10 +104,11 @@ private:
   float cameraYaw = 0.0f;
   float cameraPitch = 0.2f;
   float cameraRadius = 10.0f;
+  float spin_a = 0.99f;
   bool mouseDragging = false;
 
   struct PushConstants {
-    float time_res[4];
+    float params[4];
     float cameraPos[4];
   };
 
@@ -135,6 +136,20 @@ private:
           reinterpret_cast<BlackHoleRenderer *>(glfwGetWindowUserPointer(w));
       app->onScroll(xoffset, yoffset);
     });
+    glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int scancode, int action, int mods) {
+      auto app =
+          reinterpret_cast<BlackHoleRenderer *>(glfwGetWindowUserPointer(w));
+      app->onKey(key, scancode, action, mods);
+    });
+  }
+
+  void onKey(int key, int scancode, int action, int mods) {
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+      if (key == GLFW_KEY_RIGHT) spin_a += 0.05f;
+      if (key == GLFW_KEY_LEFT) spin_a -= 0.05f;
+      if (spin_a > 0.999f) spin_a = 0.999f;
+      if (spin_a < -0.999f) spin_a = -0.999f;
+    }
   }
 
   void onMouseButton(int button, int action, int mods) {
@@ -608,15 +623,15 @@ private:
                       graphicsPipeline);
 
     PushConstants constants{};
-    constants.time_res[0] = glfwGetTime();
-    constants.time_res[1] = WIDTH;
-    constants.time_res[2] = HEIGHT;
-    constants.time_res[3] = 0.0f;
+    constants.params[0] = glfwGetTime();
+    constants.params[1] = WIDTH;
+    constants.params[2] = HEIGHT;
+    constants.params[3] = 1.0f; // Mass M
 
     constants.cameraPos[0] = cameraRadius * sin(cameraYaw) * cos(cameraPitch);
     constants.cameraPos[1] = cameraRadius * sin(cameraPitch);
     constants.cameraPos[2] = cameraRadius * cos(cameraYaw) * cos(cameraPitch);
-    constants.cameraPos[3] = 0.0f;
+    constants.cameraPos[3] = spin_a;
 
     vkCmdPushConstants(commandBuffer, pipelineLayout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants),
